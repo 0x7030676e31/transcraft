@@ -1,0 +1,10 @@
+/target/
+/dist/
+/.cache/
+/build/
+*.jar
+*.exe
+__pycache__/
+*.pyc
+.DS_Store
+
