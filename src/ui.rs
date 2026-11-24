@@ -16,6 +16,7 @@ enum Event {
 
 struct Launcher {
     root: PathBuf,
+    grass_block: egui::TextureHandle,
     settings: Settings,
     message: String,
     error: bool,
@@ -26,14 +27,15 @@ struct Launcher {
 }
 
 impl Launcher {
-    fn new(root: PathBuf) -> Self {
+    fn new(root: PathBuf, grass_block: egui::TextureHandle) -> Self {
         let (settings, message, error) = match Settings::load(&root) {
-            Ok(s) => (s, "Ready to play".into(), false),
+            Ok(s) => (s, String::new(), false),
             Err(e) => (Settings::default(), format!("{e:#}"), true),
         };
         let bundled = bundle::embedded().is_ok();
         Self {
             root,
+            grass_block,
             settings,
             message,
             error,
@@ -68,7 +70,7 @@ impl Launcher {
                     let _guard = bundle::lock(&root, "game.lock")?;
                     let (mut exe, payload) = bundle::embedded()?;
                     payload.install(&mut exe, &root, true, &report)?;
-                    report("Bundled files repaired. Saves and settings are preserved.".into());
+                    report("Files repaired.".into());
                     Ok(())
                 })()
             } else {
@@ -81,33 +83,11 @@ impl Launcher {
 
     fn content(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         ui.horizontal(|ui| {
-            ui.label(
-                RichText::new("■")
-                    .size(32.0)
-                    .color(Color32::from_rgb(125, 208, 151)),
-            );
-            ui.heading(RichText::new("transcraft").size(30.0));
+            ui.image((self.grass_block.id(), egui::vec2(32.0, 32.0)));
+            ui.heading(RichText::new("Transcraft").size(30.0));
         });
-        ui.label(
-            RichText::new("Your world. Wherever you are.").color(Color32::from_rgb(160, 174, 180)),
-        );
-        ui.add_space(20.0);
-        egui::Frame::new()
-            .fill(Color32::from_rgb(31, 39, 42))
-            .inner_margin(18.0)
-            .corner_radius(10.0)
-            .show(ui, |ui| {
-                ui.set_min_width(ui.available_width());
-                ui.label(
-                    RichText::new("MINECRAFT JAVA  /  26.3")
-                        .size(12.0)
-                        .color(Color32::from_rgb(125, 208, 151)),
-                );
-                ui.add_space(7.0);
-                ui.label(RichText::new("Fabric · ready for offline play").size(19.0));
-                ui.label("Sodium  +  Lithium  +  Mod Menu  +  Fabric API");
-            });
-        ui.add_space(20.0);
+        ui.label(RichText::new("Minecraft 26.3 · Fabric").color(Color32::from_rgb(160, 174, 180)));
+        ui.add_space(24.0);
         ui.add_enabled_ui(!self.busy, |ui| {
             egui::Grid::new("settings")
                 .spacing([24.0, 14.0])
@@ -117,7 +97,8 @@ impl Launcher {
                         egui::TextEdit::singleline(&mut self.settings.nickname)
                             .desired_width(240.0)
                             .char_limit(16),
-                    );
+                    )
+                    .on_hover_text("Changing nickname changes your player identity and inventory.");
                     ui.end_row();
                     ui.label("Memory");
                     ui.add(
@@ -139,12 +120,12 @@ impl Launcher {
             ui.checkbox(&mut self.advanced, "More options");
             if self.advanced {
                 ui.add_space(8.0);
-                ui.label("Game folder (blank uses the default)");
+                ui.label("Game folder");
                 ui.add(
                     egui::TextEdit::singleline(&mut self.settings.game_directory)
-                        .desired_width(f32::INFINITY),
+                        .desired_width(f32::INFINITY)
+                        .hint_text("Default game folder"),
                 );
-                ui.small("Changing nickname changes your offline player identity and inventory.");
                 ui.horizontal(|ui| {
                     if ui.button("Save settings").clicked() {
                         match self.settings.save(&self.root) {
@@ -159,7 +140,7 @@ impl Launcher {
                         }
                     }
                     if ui
-                        .add_enabled(self.bundled, egui::Button::new("Repair bundled files"))
+                        .add_enabled(self.bundled, egui::Button::new("Repair files"))
                         .clicked()
                     {
                         self.work(true, ctx);
@@ -180,7 +161,7 @@ impl Launcher {
                 .add_enabled(
                     self.bundled && valid.is_ok(),
                     egui::Button::new(
-                        RichText::new("Play Minecraft")
+                        RichText::new("Play")
                             .size(18.0)
                             .color(Color32::from_rgb(15, 32, 23)),
                     )
@@ -192,32 +173,27 @@ impl Launcher {
                 self.work(false, ctx);
             }
         });
-        ui.add_space(12.0);
         if !self.bundled {
+            ui.add_space(12.0);
             ui.colored_label(
                 Color32::from_rgb(245, 181, 125),
-                concat!(
-                    "Launcher only: package the offline bundle with tools/bundle.py ",
-                    "before transferring to an offline PC. See README.md.",
-                ),
+                "Game bundle missing. See README to build an offline copy.",
             );
         }
-        ui.horizontal_wrapped(|ui| {
-            if self.busy {
-                ui.spinner();
-            }
-            let color = if self.error {
-                Color32::from_rgb(255, 153, 142)
-            } else {
-                Color32::from_rgb(164, 180, 185)
-            };
-            ui.label(RichText::new(&self.message).color(color));
-        });
-        ui.add_space(10.0);
-        ui.small(format!(
-            "v{}   ·   Local profiles   ·   No sign-in required",
-            env!("CARGO_PKG_VERSION")
-        ));
+        if self.busy || !self.message.is_empty() {
+            ui.add_space(12.0);
+            ui.horizontal_wrapped(|ui| {
+                if self.busy {
+                    ui.spinner();
+                }
+                let color = if self.error {
+                    Color32::from_rgb(255, 153, 142)
+                } else {
+                    Color32::from_rgb(164, 180, 185)
+                };
+                ui.label(RichText::new(&self.message).color(color));
+            });
+        }
     }
 }
 
@@ -226,7 +202,13 @@ impl eframe::App for Launcher {
         if let Some(rx) = &self.events {
             for event in rx.try_iter() {
                 match event {
-                    Event::Status(s) => self.message = s,
+                    Event::Status(s) => {
+                        self.message = if s == "Ready to play" {
+                            String::new()
+                        } else {
+                            s
+                        };
+                    }
                     Event::Done(result) => {
                         self.busy = false;
                         if let Err(e) = result {
@@ -259,11 +241,23 @@ impl eframe::App for Launcher {
 }
 
 pub fn run(root: PathBuf) -> Result<()> {
+    let icon = image::load_from_memory(include_bytes!("../assets/grass-block.png"))
+        .context("Cannot decode grass block icon")?
+        .to_rgba8();
+    let pixels = egui::ColorImage::from_rgba_unmultiplied(
+        [icon.width() as usize, icon.height() as usize],
+        icon.as_raw(),
+    );
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("Transcraft")
-            .with_inner_size([610.0, 700.0])
-            .with_min_inner_size([570.0, 680.0]),
+            .with_icon(egui::IconData {
+                width: icon.width(),
+                height: icon.height(),
+                rgba: icon.into_raw(),
+            })
+            .with_inner_size([570.0, 440.0])
+            .with_min_inner_size([570.0, 440.0]),
         renderer: eframe::Renderer::Glow,
         ..Default::default()
     };
@@ -277,7 +271,10 @@ pub fn run(root: PathBuf) -> Result<()> {
                 s.spacing.item_spacing = egui::vec2(10.0, 8.0);
                 s.spacing.button_padding = egui::vec2(12.0, 8.0);
             });
-            Ok(Box::new(Launcher::new(root)))
+            let grass_block =
+                cc.egui_ctx
+                    .load_texture("grass-block", pixels, egui::TextureOptions::NEAREST);
+            Ok(Box::new(Launcher::new(root, grass_block)))
         }),
     )
     .map_err(|e| anyhow::anyhow!("{e}"))
