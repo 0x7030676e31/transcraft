@@ -12,6 +12,7 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
       prerelease: ${{ steps.version.outputs.prerelease }}
+      bundled: ${{ steps.version.outputs.bundled }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -19,6 +20,8 @@ jobs:
           python-version: '3.12'
       - id: version
         shell: python
+        env:
+          BUNDLED: ${{ github.event.repository.private }}
         run: |
           import os, re, tomllib
           version = tomllib.load(open('Cargo.toml', 'rb'))['package']['version']
@@ -27,6 +30,7 @@ jobs:
           assert os.environ['GITHUB_REF_NAME'] == 'v' + version, 'Tag must match Cargo.toml version'
           with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
               out.write(f'version={version}\nprerelease={str("-" in version.split("+")[0]).lower()}\n')
+              out.write(f'bundled={os.environ["BUNDLED"]}\n')
   build:
     needs: validate
     strategy:
@@ -87,17 +91,73 @@ jobs:
     runs-on: ubuntu-22.04
     permissions:
       contents: write
+    env:
+      VERSION: ${{ needs.validate.outputs.version }}
+      BUNDLED: ${{ needs.validate.outputs.bundled }}
     steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
       - uses: actions/download-artifact@v4
         with:
           path: release
           merge-multiple: true
+      - name: Cache verified bundle downloads
+        if: needs.validate.outputs.bundled == 'true'
+        uses: actions/cache@v4
+        with:
+          path: .cache/downloads
+          key: release-bundle-${{ hashFiles('bundle.lock.json') }}
+      - name: Package fully contained executables
+        if: needs.validate.outputs.bundled == 'true'
+        shell: python
+        run: |
+          import os, pathlib, subprocess, sys
+          version = os.environ['VERSION']
+          for platform, extension in [('linux', ''), ('windows', '.exe')]:
+              prefix = f'Transcraft-{version}-{platform}-x86_64'
+              binary = pathlib.Path('release') / (prefix + '-launcher-only' + extension)
+              output = pathlib.Path('release') / (prefix + extension)
+              subprocess.run([sys.executable, 'tools/bundle.py', 'prepare', '--platform', platform], check=True)
+              subprocess.run([
+                  sys.executable, 'tools/bundle.py', 'pack', '--binary', str(binary),
+                  '--payload', f'build/{platform}/payload.tar.gz', '--output', str(output)
+              ], check=True)
+              if platform == 'linux':
+                  subprocess.run([str(output.resolve()), '--verify', '--data-dir', 'build/verify-release'], check=True)
+              binary.unlink()
+              binary.with_name(binary.name + '.sha256').unlink()
+      - name: Write release notes
+        shell: python
+        run: |
+          import os, pathlib
+          if os.environ['BUNDLED'] == 'true':
+              notes = '''Fully contained offline executables for personal use.
+
+          Download the Windows .exe or Linux executable and transfer that single file to the offline PC.
+          Includes Java 25, Minecraft 26.3, Fabric, Sodium, Lithium, Mod Menu, Fabric API, libraries, and all game assets.
+          First launch extracts the files into your user folder. No internet, separate Java installation, or admin rights are needed.
+
+          SHA-256 files are optional transfer checks; they are not needed to run the launcher.
+          '''
+          else:
+              notes = '''Launcher-only binaries for Windows 10/11 x86-64 and Linux x86-64.
+
+          These do not include Minecraft or Java. Follow the README's personal bundle build instructions before transferring to an offline PC.
+          '''
+          path = pathlib.Path('build/release-notes.md')
+          path.parent.mkdir(parents=True, exist_ok=True)
+          path.write_text(notes, encoding='utf-8')
+      - name: Verify repository is still private before publishing bundled files
+        if: needs.validate.outputs.bundled == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: test "$(gh api "repos/$GITHUB_REPOSITORY" --jq .private)" = true
       - uses: softprops/action-gh-release@v2
         with:
           prerelease: ${{ needs.validate.outputs.prerelease == 'true' }}
           generate_release_notes: true
           files: release/*
-          body: |
-            Launcher-only binaries for Windows 10/11 x86-64 and Linux x86-64.
-
-            These do not include Minecraft or Java. Use the README's personal offline bundle instructions on an online build machine before transferring to an offline PC. Public releases do not redistribute Mojang game files.
+          body_path: build/release-notes.md
